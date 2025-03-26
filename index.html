@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NERV Advanced Spherical Projection</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background-color: #000015;
+            color: #00ff9c;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            z-index: 10;
+            pointer-events: none;
+        }
+        .data-panel {
+            background: rgba(0,30,50,0.7);
+            border: 1px solid #00ff9c;
+            padding: 10px;
+            backdrop-filter: blur(5px);
+        }
+        .scan-line {
+            position: fixed;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(to right, transparent, rgba(0, 255, 156, 0.5), transparent);
+            animation: scanAnimation 3s linear infinite;
+            z-index: 20;
+            pointer-events: none;
+        }
+        @keyframes scanAnimation {
+            0% { top: 0; opacity: 0.3; }
+            50% { opacity: 0.1; }
+            100% { top: 100%; opacity: 0.3; }
+        }
+        #debug-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,30,50,0.7);
+            border: 1px solid #00ff9c;
+            padding: 10px;
+            max-width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div class="scan-line"></div>
+        <div id="overlay">
+            <div class="data-panel">
+                SPHERICAL PROJECTION: <span id="sphereData">INITIALIZING</span>
+            </div>
+            <div class="data-panel" id="timeDisplay">00:00:00</div>
+        </div>
+        <div id="debug-panel">
+            <div id="debug-info">SYSTEM DIAGNOSTICS</div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        class NERVSphereInterface {
+            constructor() {
+                this.initScene();
+                this.createSphere();
+                this.addLights();
+                this.createParticleSystem();
+                this.setupEventListeners();
+                this.animate();
+            }
+
+            initScene() {
+                this.scene = new THREE.Scene();
+                this.container = document.getElementById('container');
+                this.width = this.container.clientWidth;
+                this.height = this.container.clientHeight;
+
+                this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
+                this.camera.position.z = 5;
+
+                this.renderer = new THREE.WebGLRenderer({ 
+                    antialias: true, 
+                    alpha: true 
+                });
+                this.renderer.setSize(this.width, this.height);
+                this.container.appendChild(this.renderer.domElement);
+
+                // Add slight camera movement
+                this.cameraMovement = {
+                    phi: 0,
+                    theta: 0
+                };
+            }
+
+            createSphere() {
+                const geometry = new THREE.SphereGeometry(2, 128, 128);
+                this.material = new THREE.ShaderMaterial({
+                    uniforms: {
+                        time: { value: 0 },
+                        amplitude: { value: 0.2 }
+                    },
+                    vertexShader: `
+                        uniform float time;
+                        uniform float amplitude;
+                        varying vec2 vUv;
+                        varying vec3 vNormal;
+                        
+                        void main() {
+                            vUv = uv;
+                            vNormal = normal;
+                            
+                            // Complex deformation
+                            vec3 newPosition = position + normal * (
+                                sin(position.x * 5.0 + time) * 
+                                cos(position.y * 4.0 + time * 0.5) * 
+                                amplitude
+                            );
+                            
+                            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform float time;
+                        varying vec2 vUv;
+                        varying vec3 vNormal;
+                        
+                        void main() {
+                            // Layered color generation
+                            vec3 baseColor = vec3(0.0, 1.0, 0.6);
+                            vec3 accentColor = vec3(0.0, 0.5, 0.3);
+                            
+                            float colorVariation = sin(time + vUv.x * 10.0 + vUv.y * 8.0);
+                            vec3 finalColor = mix(baseColor, accentColor, colorVariation * 0.5 + 0.5);
+                            
+                            // Add slight edge highlighting
+                            float edgeHighlight = dot(vNormal, vec3(0.0, 0.0, 1.0));
+                            finalColor += vec3(0.2, 0.2, 0.2) * (1.0 - abs(edgeHighlight));
+                            
+                            gl_FragColor = vec4(finalColor, 0.8);
+                        }
+                    `,
+                    transparent: true
+                });
+
+                this.sphere = new THREE.Mesh(geometry, this.material);
+                this.scene.add(this.sphere);
+            }
+
+            createParticleSystem() {
+                const particlesGeometry = new THREE.BufferGeometry();
+                const particlesCount = 5000;
+                const posArray = new Float32Array(particlesCount * 3);
+
+                for (let i = 0; i < particlesCount * 3; i++) {
+                    posArray[i] = (Math.random() - 0.5) * 20;
+                }
+
+                particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+                
+                const particlesMaterial = new THREE.PointsMaterial({
+                    size: 0.005,
+                    color: '#00ff9c',
+                    transparent: true,
+                    opacity: 0.3
+                });
+
+                this.particleSystem = new THREE.Points(particlesGeometry, particlesMaterial);
+                this.scene.add(this.particleSystem);
+            }
+
+            addLights() {
+                const ambientLight = new THREE.AmbientLight(0x00ff9c, 0.5);
+                this.scene.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0x00ff9c, 0.7);
+                directionalLight.position.set(5, 5, 5);
+                this.scene.add(directionalLight);
+            }
+
+            setupEventListeners() {
+                window.addEventListener('resize', () => this.onWindowResize());
+                window.addEventListener('mousemove', (event) => this.onMouseMove(event));
+            }
+
+            onWindowResize() {
+                this.width = this.container.clientWidth;
+                this.height = this.container.clientHeight;
+                
+                this.camera.aspect = this.width / this.height;
+                this.camera.updateProjectionMatrix();
+                
+                this.renderer.setSize(this.width, this.height);
+            }
+
+            onMouseMove(event) {
+                // Subtle camera movement based on mouse position
+                this.cameraMovement.theta = (event.clientX / this.width - 0.5) * 0.5;
+                this.cameraMovement.phi = (event.clientY / this.height - 0.5) * 0.5;
+            }
+
+            animate(time = 0) {
+                requestAnimationFrame(this.animate.bind(this));
+
+                // Sphere animation
+                this.sphere.rotation.y += 0.003;
+                this.sphere.rotation.x += 0.001;
+
+                // Update shader time and amplitude
+                this.material.uniforms.time.value = time * 0.001;
+                this.material.uniforms.amplitude.value = Math.sin(time * 0.0005) * 0.3;
+
+                // Particle system rotation
+                this.particleSystem.rotation.y += 0.0005;
+                this.particleSystem.rotation.x += 0.0002;
+
+                // Camera movement
+                this.camera.position.x = Math.sin(this.cameraMovement.theta) * 0.2;
+                this.camera.position.y = Math.sin(this.cameraMovement.phi) * 0.2;
+
+                // Update interface elements
+                this.updateInterfaceData(time);
+
+                this.renderer.render(this.scene, this.camera);
+            }
+
+            updateInterfaceData(time) {
+                const sphereData = document.getElementById('sphereData');
+                const timeDisplay = document.getElementById('timeDisplay');
+                const debugInfo = document.getElementById('debug-info');
+
+                // Sync ratio simulation
+                const syncRatio = Math.round(Math.sin(time * 0.001) * 50 + 50);
+                sphereData.textContent = `SYNC: ${syncRatio}%`;
+
+                // Time display
+                const now = new Date();
+                timeDisplay.textContent = now.toLocaleTimeString('en-US', {
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+
+                // Debug information
+                debugInfo.innerHTML = `
+                    NEURAL SYNC: ${syncRatio}%<br>
+                    SYSTEM LATENCY: ${Math.round(Math.random() * 10)}ms<br>
+                    PARTICLE DENSITY: ${5000} units
+                `;
+            }
+        }
+
+        // Initialize the interface
+        new NERVSphereInterface();
+    </script>
+</body>
+</html>
